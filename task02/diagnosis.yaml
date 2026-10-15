@@ -1,0 +1,77 @@
+﻿schema: 1
+task: task02
+
+environment:
+  clean_start_command: "docker compose up -d --wait; rosdep update --rosdistro jazzy; rosdep install --from-paths src --ignore-src -y; colcon build; colcon test; colcon test-result --verbose"
+  ros_distribution: "ROS 2 Jazzy"
+  rmw_implementation: "rmw_cyclonedds_cpp"
+
+incidents:
+  - id: parameter-file-target
+    symptom: "Датчик расстояния запускался со значениями по умолчанию вместо настроенных."
+    evidence:
+      command: "Сравнить src/warehouse_bringup/config/warehouse.yaml и src/warehouse_bringup/launch/warehouse.launch.py."
+      observation: "В YAML указан front_range_sensor, а launch-файл создает range_sensor."
+    fault_class: "Несовпадение селектора узла параметров"
+    root_cause: "Селектор в файле параметров не совпадал с именем запущенного узла."
+    minimal_fix: "Селектор изменен на /**/range_sensor."
+    verification:
+      command: "ros2 param get /robot_1/range_sensor publish_rate_hz; ros2 param get /robot_1/range_sensor readings_m"
+      observation: "Команды вернули 4.0 и [0.35]."
+
+  - id: range-qos
+    symptom: "Фильтр препятствий не получал поток датчика с настройками QoS издателя."
+    evidence:
+      command: "Проверить QoS издателя в range_sensor.py и подписки в obstacle_filter.py."
+      observation: "Издатель использовал best effort, а подписка фильтра — reliable по умолчанию."
+    fault_class: "Несовместимые настройки QoS"
+    root_cause: "Подписка запрашивала reliable-доставку у издателя с режимом best effort."
+    minimal_fix: "Для подписки фильтра применен sensor_data_qos()."
+    verification:
+      command: "ros2 topic info /robot_1/range/readings -v"
+      observation: "У издателя и обеих подписок указаны BEST_EFFORT, KEEP_LAST depth 5, VOLATILE."
+
+  - id: safety-topic-and-qos
+    symptom: "Состояние безопасности могло передаваться между namespace роботов, а поздно запущенная панель могла пропустить последнее состояние."
+    evidence:
+      command: "Проверить safety_monitor.py, operator_panel.py и qos.py."
+      observation: "Оба узла использовали абсолютный путь /safety/state; издатель работал в режиме volatile, а панель запрашивала transient local."
+    fault_class: "Утечка между namespace и несовместимая durability"
+    root_cause: "Общий topic объединял экземпляры роботов, а издатель не сохранял состояние для поздних подписчиков."
+    minimal_fix: "Оба имени topic изменены на safety/state; издатель настроен на reliable, transient local, depth 1."
+    verification:
+      command: "ros2 topic info /robot_1/safety/state -v; проверить журнал поздно запущенного operator_panel."
+      observation: "Обе стороны указали RELIABLE и TRANSIENT_LOCAL. Панель вывела PANEL_READY namespace=/robot_1 stopped=True sequence=0."
+
+  - id: installed-config
+    symptom: "После установки launch-файл не мог загрузить параметры из каталога package share."
+    evidence:
+      command: "Проверить data_files в src/warehouse_bringup/setup.py."
+      observation: "Launch-файлы устанавливались, но config/warehouse.yaml не устанавливался."
+    fault_class: "Не установлен файл runtime-конфигурации"
+    root_cause: "В setup.py не были добавлены YAML-файлы из config в список устанавливаемых данных."
+    minimal_fix: "Файлы config/*.yaml добавлены в share/warehouse_bringup/config."
+    verification:
+      command: "rosdep install --from-paths src --ignore-src -y; colcon build --event-handlers console_direct+"
+      observation: "rosdep разрешил все зависимости; сборка завершила все 3 пакета и установила config/warehouse.yaml."
+
+  - id: missing-direct-runtime-dependency
+    symptom: "В manifest пакета warehouse_nodes не была указана зависимость geometry_msgs, хотя пакет ее использует."
+    evidence:
+      command: "Сверить импорт в src/warehouse_nodes/warehouse_nodes/drive_controller.py с src/warehouse_nodes/package.xml."
+      observation: "drive_controller.py импортирует geometry_msgs.msg.Twist, но package.xml не объявлял geometry_msgs."
+    fault_class: "Не объявлена прямая runtime-зависимость"
+    root_cause: "Используемая напрямую зависимость отсутствовала в package.xml."
+    minimal_fix: "В warehouse_nodes/package.xml добавлена runtime-зависимость geometry_msgs."
+    verification:
+      command: "rosdep install --from-paths src --ignore-src -y; colcon build --event-handlers console_direct+"
+      observation: "rosdep разрешил зависимости, сборка успешно завершила все 3 пакета."
+
+final_acceptance:
+  clean_pipeline: "rosdep, colcon build, colcon test и colcon test-result завершились успешно. Собраны 3 пакета, пройдено 7 тестов, ошибок и сбоев нет."
+  single_robot_graph: "Запуск создал шесть узлов и все application topics в /robot_1. Параметры совпали с YAML: 4.0 Гц, [0.35], 0.60 м, 0.35 м/с, 0.50 м/с и 0.50 м."
+  late_joiner: "Поздно запущенная панель получила последнее сохраненное состояние safety: stopped=True, sequence=0."
+  two_robot_isolation: "В /alpha и /beta запущено по шесть узлов, application topics разделены. Сообщения CROSS_TALK не было."
+  clean_shutdown: "После Ctrl-C все двенадцать процессов завершились штатно с exit code 0."
+
+known_limits: "Проверки выполнялись в закрепленном образе ROS 2 Jazzy с rmw_cyclonedds_cpp."
