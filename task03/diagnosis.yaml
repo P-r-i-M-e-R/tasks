@@ -1,0 +1,62 @@
+assignment: L03
+student: "Максимов Филипп"
+observations:
+  - symptom: "Точка лидара в одометрии смещена по y"
+    before:
+      command: "./course exec ros2 run tf2_ros tf2_echo rover/base_link rover/lidar_link --ros-args -p use_sim_time:=true"
+      evidence: "Преобразование rover/base_link до rover/lidar_link в момент статике: Translation [0.100, 0.120, 0.160] м, а должно быть [0.100, 0.000, 0.160] м. ./check показал ошибку лидара 0.120 м"
+    root_cause: "в конфиг файле src/rover_description/config/homework_mounts.yaml прописано lidar_xyz = [0.10, 0.12, 0.16]"
+    change: "Установить lidar_xyz = [0.10, 0.00, 0.16] в конфиг файле"
+    after:
+      command: "./course exec ros2 run tf2_ros tf2_echo rover/base_link rover/lidar_link --ros-args -p use_sim_time:=true"
+      evidence: "Новые параметры лидара относительно rover/base_link - [0.100, 0.000, 0.160] м , в момент времени 0.0. Ошибка в check упала до 2.9e-14 м"
+
+  - symptom: "Камера видит контрольную точку не там, где она есть. Должна быть [4.0, 0.4, 0.4] в топике odom"
+    before:
+      command: "./course exec ros2 run tf2_ros tf2_echo rover/camera_link rover/camera_optical_frame --ros-args -p use_sim_time:=true"
+      evidence: "Между rover/camera_link и rover/camera_optical_frame отсутсвует поворот - кватернион равен[0, 0, 0, 1], а нужен [-0.5, 0.5, -0.5, 0.5]. Ошибка камеры в check 2.204 м"
+    root_cause: "Параметр camera_optical_rpy = [0.0, 0.0, 0.0], оптическая система совпадает с корпусом камеры, хотя у неё z должен смотреть вперёд, x вправо, y вниз"
+    change: "Поменять camera_optical_rpy на [-pi/2, 0, -pi/2]"
+    after:
+      command: "./course exec ros2 run tf2_ros tf2_echo rover/camera_link rover/camera_optical_frame --ros-args -p use_sim_time:=true"
+      evidence: "Кватернион стал [-0.500, 0.500, -0.500, 0.500], в градусах это поворот на -90 по roll и -90 по yaw. В check ошибка камеры 8.9e-14 м"
+
+  - symptom: "Калибровочная точка IMU далеко [1.0, 2.0, 0.6]"
+    before:
+      command: "./course exec ros2 topic echo /rover/observation/imu --once"
+      evidence: "Сообщение в топике stamp в 32.4 с пришло с frame_id rover/base_link, хотя датчик стоит в rover/imu_link. Из-за этого ошибка в check - 4.397 м"
+    root_cause: "в src/rover_bringup/config/homework.yaml написано imu_frame: base_link, то есть топик fixture подписывает данные IMU не тем фреймом, и поворот на pi/2 со смещением теряется"
+    change: "Исправить на imu_frame: imu_link"
+    after:
+      command: "./course exec ros2 topic echo /rover/observation/imu --once"
+      evidence: "На 389.1 с сообщение идёт с frame_id rover/imu_link, ошибка в check около 1.1e-13 м"
+
+  - symptom: "Поза из /rover/odom не сходится с TF между odom и base_link"
+    before:
+      command: "./course exec ros2 topic echo /rover/odom --once"
+      evidence: "В топике stamp в 37.3 с, frame_id rover/odom, но child_frame_id - rover/lidar_link вместо rover/base_link. check показывает ошибку с контрактом odometry"
+    root_cause: "в homework.yaml прописано odom_child_frame: lidar_link"
+    change: "Заменить на odom_child_frame: base_link"
+    after:
+      command: "./course exec ros2 topic echo /rover/odom --once"
+      evidence: "На 399.1 с child_frame_id показывает rover/base_link, высота z = 0.2 м как в спецификации. check после сравнения odom с TF ошибок не нашёл"
+
+  - symptom: "Validator ничего не проверяет, вместо этого на каждую точку пишет NOT_IMPLEMENTED"
+    before:
+      command: "./course exec python3 -m pytest src/rover_tf_validator/test/test_policy.py -q"
+      evidence: "Все 15 тестов не прошли проверку. В check все отчёты NOT_IMPLEMENTED и ни одной успешной точки"
+    root_cause: "в validator.py есть заглушки в quaternion_is_valid и validate_observation"
+    change: "Дописаны обе функции с проверкой frame id, stamp и числа на входе. Сделана оценка lookup на время измерения без изменения ошибки, проверен кватернион и применено преобразование"
+    after:
+      command: "./course exec python3 -m pytest src/rover_tf_validator/test/test_policy.py src/rover_tf_validator/test/test_regression.py -q"
+      evidence: "17 passed. В check все 300 отчётов 'OK'. Работают лидар, камера и IMU, при этом робот едет, а данные приходят с задержкой 0.20 с"
+validator:
+  measurement_time_test: "./course exec python3 -m pytest src/rover_tf_validator/test/test_regression.py -q, 2 passed. В тесте робот едет 0.5 м/с, на время измерения точка получается в x = 7.25 м, в точке latest 7.35 м. Итоговый промах равен 10 см"
+  failure_case: "В /rover/observation/lidar отправлена точка с несуществующим frame = rover/ghost_link. Validator за 0.5 с сделал 26 попыток и вернул UNKNOWN_FRAME без точки. Точку со stamp 0 он сразу отклонил как INVALID_INPUT"
+  namespace_variant: "Запущено ./course run homework namespace:=testbot frame_prefix:=testbot/ rviz:=false и acceptance с --frame-prefix testbot/. Получен passed: true, все 300 отчётов 'OK', с ошибками меньше 2e-15 м"
+verification:
+  build: "./course build, все 4 пакета собрались"
+  public_tests: "./course test, 33 теста, ни одного падения и пропуска"
+  acceptance: "./course check прошёл, ошибки лидара 2.9e-14 м, камеры 8.9e-14 м, IMU 1.1e-13 м, все 300 отчётов 'OK'"
+  cleanup: "launch остановлен через Ctrl+C, проведена проверка, что не осталось процессов fixture и validator, потом ./course down"
+known_limits: []
